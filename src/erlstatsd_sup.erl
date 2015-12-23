@@ -28,13 +28,15 @@ start_link() ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    ChildUDP = {erlstatsd_udp, {erlstatsd_udp, init, []},
-            permanent, brutal_kill, worker, [erlstatsd_udp]},
+    ChildrenUDP = [{{udp_listener, X},  {erlstatsd_udp, init, [1]},
+            permanent, brutal_kill, worker, [erlstatsd_udp]} || X <- lists:seq(1,10)],
     ChildFlusher = {erlstatsd_metric_flusher, {erlstatsd_metric_flusher, start_link, []},
                     permanent, brutal_kill, worker, [erlstatsd_metric_flusher]},
     ChildMetricSender = {metric_sender, {metric_sender, start_link, ["localhost", 2300]},
                          permanent, brutal_kill, worker, [metric_sender]},
-    {ok, {{one_for_one, 0, 1}, [ChildUDP, ChildFlusher, ChildMetricSender]}}.
+    ChildLineParser = {line_parser, {erlstatsd_lineparser, start_link, []},
+                       permanent, brutal_kill, worker, [erlstatsd_lineparser]},
+    {ok, {{one_for_one, 5, 5}, ChildrenUDP ++ [ChildFlusher, ChildMetricSender, ChildLineParser]}}.
 
 %%====================================================================
 %% Internal functions

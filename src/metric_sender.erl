@@ -29,14 +29,28 @@ send_metric(MetricName, Value, Timestamp) ->
 
 %% gen_server callbacks
 
+connect_to_graphite({GraphiteServer, GraphitePort}) ->
+    connect_to_graphite({GraphiteServer, GraphitePort}, 0).
+
+connect_to_graphite({GraphiteServer, GraphitePort}, Backoff) ->
+    receive
+    after Backoff -> ok
+    end,
+    case gen_tcp:connect(GraphiteServer, GraphitePort, [binary]) of
+        {ok, Socket} -> {ok, Socket};
+        {error, Why} ->
+            io:format("Connection to graphite backend failed: ~p~n", [Why]),
+            connect_to_graphite({GraphiteServer, GraphitePort}, Backoff + 5000)
+    end.
+
 init([{GraphiteServer, GraphitePort}]) ->
-    {ok, Socket} = gen_tcp:connect(GraphiteServer, GraphitePort, [binary]),
+    {ok, Socket} = connect_to_graphite({GraphiteServer, GraphitePort}),
     gproc:reg({n, l, metric_sender}),
     {ok, #state{graphite={GraphiteServer, GraphitePort}, socket=Socket}}.
 
-handle_cast({metric, MetricName, Value, Timestamp}, #state{socket=Socket}=State) ->
-    ok = gen_tcp:send(Socket, io_lib:format("~s ~w ~w~n", [MetricName, Value, Timestamp])),
-    {noreply, State}.
+handle_cast({metric, MetricName, Value, Timestamp}, #state{}=State) ->
+    {ok, NewState} = send_line(io_lib:format("~s ~w ~w~n", [MetricName, Value, Timestamp]), State),
+    {noreply, NewState}.
 
 handle_info(_Msg, State) ->
     {noreply, State}.
@@ -48,4 +62,19 @@ terminate(normal, _State) ->
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
+    {ok, State}.
+
+%% Private functions
+
+send_line(Line, #state{socket=Socket}=State) ->
+    case gen_tcp:send(Socket, Line) of
+        ok -> {ok, State};
+        {error, Reason} ->
+            io:format("Got an error sending line (~p). Will reconnect...~n", [Reason]),
+            {ok, NewSocket} = connect_to_graphite(State#state.graphite),
+            send_line(noretry, Line, State#state{socket=NewSocket})
+    end.
+
+send_line(noretry, Line, #state{socket=Socket}=State) ->
+    ok = gen_tcp:send(Socket, Line),
     {ok, State}.

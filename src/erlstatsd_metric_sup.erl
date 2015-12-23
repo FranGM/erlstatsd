@@ -15,7 +15,6 @@ start_link() ->
 
 %% TODO: All the numbers are made up
 init([]) ->
-    io:format("Here I am"),
     RestartStrategy = {simple_one_for_one, 3, 60},
     ChildSpec = {erlstatsd_metric,
                  {erlstatsd_metric, start_link, []},
