@@ -2,6 +2,7 @@
 
 -export([do_stuff/0]).
 
+-spec do_stuff() -> ok.
 do_stuff() ->
     {ok, Pid} = erlstatsd_metric:start_link("foo.bar"),
     erlstatsd_metric:counter(Pid, 12),

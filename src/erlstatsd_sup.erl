@@ -19,6 +19,7 @@
 %% API functions
 %%====================================================================
 
+-spec start_link() -> {ok, pid()}.
 start_link() ->
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
@@ -27,6 +28,8 @@ start_link() ->
 %%====================================================================
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
+-spec init(_Args::list()) ->
+    {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}} | ignore.
 init([]) ->
     ChildrenUDP = [{{udp_listener, X},  {erlstatsd_udp, init, [1]},
             permanent, brutal_kill, worker, [erlstatsd_udp]} || X <- lists:seq(1,10)],
