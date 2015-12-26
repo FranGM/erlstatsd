@@ -1,20 +1,19 @@
 -module(erlstatsd_metric).
 -behaviour(gen_server).
 
--record(timerValues, {count::non_neg_integer(),
-                      lower::number(),
-                      upper::number(),
-                      sum::number(),
-                      mean::number()
-                     }).
+-ifdef(EUNIT_TEST).
+-compile(export_all).
+-endif.
+
+-include("erlstatsd_timervalues.hrl").
 
 %% TODO: Allow for global prefixes
--record(state, {metricName,
-                flushInterval=30000,
+-record(state, {metricName::string(),
+                flushInterval=30000::non_neg_integer(),
                 percent=[0.9, 0.95]::[number()],
-                counter=0,
-                gauge=0,
-                sets=sets:new(),
+                counter=0::non_neg_integer(),
+                gauge=0::number(),
+                sets=sets:new()::sets:set(),
                 timers=[]::[number()]}).
 
 %% API
@@ -54,7 +53,7 @@ flush(Pid) ->
 
 %% gen_server callbacks
 
--spec init([{metric, MetricName::binary()}]) -> {ok, #state{}}.
+-spec init([{metric, MetricName::string()}]) -> {ok, #state{}}.
 init([{metric, MetricName}]) ->
     gproc:reg({n, l, MetricName}, self()),
     gproc:reg({p, l, metric}, self()),
@@ -103,9 +102,15 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 %% Private functions
+
+-spec calculate_percentile(L::[number()], Pct::number()) -> [number()].
+calculate_percentile(L, Pct) ->
+    {PctList, _} = lists:split(round(length(L) * Pct), lists:sort(L)),
+    PctList.
+
 -spec percentileStats(L::[number(),...], Pct::number()) -> #timerValues{}.
 percentileStats(L, Pct) ->
-    {PctList, _} = lists:split(round(length(L) * Pct), lists:sort(L)),
+    PctList = calculate_percentile(L, Pct),
     calculate_timer_stats(PctList).
 
 -spec clear_state(#state{}) -> {ok, #state{}}.
@@ -116,13 +121,13 @@ clear_state(State) ->
 output_sets(State) ->
     metric_sender:send_metric(State#state.metricName, sets:size(State#state.sets)).
 
-%% TODO: Allow this not to be sent/shown
+%% TODO: Allow this not to be sent/shown if there were no changes
 -spec output_counters(#state{}) -> ok.
 output_counters(State) ->
     metric_sender:send_metric("stats_counts."++State#state.metricName, State#state.counter),
     metric_sender:send_metric("stats."++State#state.metricName, State#state.counter / (State#state.flushInterval / 1000)).
 
-%% TODO: Allow this not to be sent/shown
+%% TODO: Allow this not to be sent/shown if there were no changes
 -spec output_gauges(#state{}) -> ok.
 output_gauges(#state{gauge=Gauge}=State) ->
     metric_sender:send_metric("stats.gauges." ++ State#state.metricName, Gauge).
@@ -149,7 +154,10 @@ output_timers(State) ->
 calculate_timer_pct_stats(Timers, PctList) ->
     [{pct, Pct, percentileStats(Timers, Pct)} || Pct <- PctList ].
 
--spec calculate_timer_stats(Timers::list()) -> #timerValues{}.
+-spec calculate_timer_stats(Timers::[number()]) -> #timerValues{}.
+%% TODO: Maybe an empty list should just ben an error?
+calculate_timer_stats([]) ->
+    #timerValues{};
 calculate_timer_stats(Timers) ->
     Count = length(Timers),
     SortedList = lists:sort(Timers),
