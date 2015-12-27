@@ -1,25 +1,29 @@
 -module(metric_sender).
 -behaviour(gen_server).
 
--record(state, {graphite, socket}).
+-record(state, {id::non_neg_integer(),
+                graphite::{inet:hostname() | inet:ip_address(), inet:port_number()},
+                socket::port(),
+                lines_sent = 0 :: non_neg_integer(),
+                bytes_sent = 0 :: non_neg_integer()
+               }).
+
+%% Set a cap in the amount of time we're willing to backoff to reconnect to graphite.
+-define(BACKOFF_LIMIT, 120000).
+
+%% Initially wait 500ms for our backend to come back if we can't connect.
+-define(INITIAL_BACKOFF, 500).
 
 %% API
--export([start_link/1, start_link/2, send_metric/3, send_metric/2]).
+-export([start_link/3, send_metric/3, send_metric/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3, terminate/2, code_change/3]).
 
-%% Types
--type host() :: atom() | string() | {byte(),byte(),byte(),byte()} | {char(),char(),char(),char(),char(),char(),char(),char()}.
-
 %% API
--spec start_link(host()) -> {ok, pid()}.
-start_link(GraphiteServer) ->
-    start_link(GraphiteServer, 2003).
-
--spec start_link(GraphiteServer::host(), GraphitePort::non_neg_integer()) -> {ok, pid()}.
-start_link(GraphiteServer, GraphitePort) ->
-    gen_server:start_link(?MODULE, [{GraphiteServer, GraphitePort}], []).
+-spec start_link({id, non_neg_integer()}, GraphiteServer::inet:hostname() | inet:ip_address(), GraphitePort::inet:port_number()) -> {ok, pid()}.
+start_link({id, Id}, GraphiteServer, GraphitePort) ->
+    gen_server:start_link(?MODULE, {{id, Id}, {GraphiteServer, GraphitePort}}, []).
 
 -spec send_metric(MetricName::string(), Value::number()) -> ok.
 send_metric(MetricName, Value) ->
@@ -29,39 +33,55 @@ send_metric(MetricName, Value) ->
 
 -spec send_metric(MetricName::string(), Value::number(), Timestamp::number()) -> ok.
 send_metric(MetricName, Value, Timestamp) ->
-    [Pid] = gproc:lookup_pids({n, l, metric_sender}),
-    gen_server:cast(Pid, {metric, MetricName, Value, Timestamp}).
+    %% TODO: Detect when the list is empty and either wait for new processes to come up or just crash with a better error.
+    Pids = gproc:lookup_pids({p, l, metric_sender}),
+    SenderPid = lists:nth(random:uniform(length(Pids)), Pids),
+    gen_server:cast(SenderPid, {metric, MetricName, Value, Timestamp}).
 
 %% gen_server callbacks
 
--spec connect_to_graphite({GraphiteServer::host(), GraphitePort::non_neg_integer()}) ->
+-spec connect_to_graphite({GraphiteServer::inet:hostname() | inet:ip_address(), GraphitePort::inet:port_number()}) ->
     {ok, port()}.
 connect_to_graphite({GraphiteServer, GraphitePort}) ->
     connect_to_graphite({GraphiteServer, GraphitePort}, 0).
 
--spec connect_to_graphite({GraphiteServer::host(), GraphitePort::non_neg_integer()}, Backoff::non_neg_integer()) ->
-    {ok, port()}.
-connect_to_graphite({GraphiteServer, GraphitePort}, Backoff) ->
+-spec graphite_backoff(Backoff::non_neg_integer()) -> ok.
+graphite_backoff(Backoff) ->
     receive
     after Backoff -> ok
-    end,
+    end.
+
+%% Increase our exponential backoff.
+-spec increase_backoff(Backoff::non_neg_integer()) -> non_neg_integer().
+increase_backoff(0) -> ?INITIAL_BACKOFF;
+increase_backoff(Backoff) when Backoff*2 > ?BACKOFF_LIMIT -> ?BACKOFF_LIMIT;
+increase_backoff(Backoff) -> Backoff*2.
+
+-spec connect_to_graphite({GraphiteServer::inet:hostname() | inet:ip_address(), GraphitePort::inet:port_number()}, Backoff::non_neg_integer()) ->
+    {ok, port()}.
+connect_to_graphite({GraphiteServer, GraphitePort}, Backoff) ->
+    graphite_backoff(Backoff),
     case gen_tcp:connect(GraphiteServer, GraphitePort, [binary]) of
         {ok, Socket} -> {ok, Socket};
         {error, Why} ->
-            io:format("Connection to graphite backend failed: ~p~n", [Why]),
-            connect_to_graphite({GraphiteServer, GraphitePort}, Backoff + 5000)
+            NewBackoff = increase_backoff(Backoff),
+            lager:error("Connection to graphite backend failed: ~p. Will wait for ~w ms.", [Why, NewBackoff]),
+            connect_to_graphite({GraphiteServer, GraphitePort}, NewBackoff)
     end.
 
--spec init([{GraphiteServer::host(), GraphitePort::non_neg_integer()}]) -> {ok, #state{}}.
-init([{GraphiteServer, GraphitePort}]) ->
+-spec init({{id, Id::non_neg_integer()}, {GraphiteServer::inet:hostname() | inet:ip_address(), GraphitePort::inet:port_number()}}) ->
+    {ok, #state{}}.
+init({{id, Id}, {GraphiteServer, GraphitePort}}) ->
     {ok, Socket} = connect_to_graphite({GraphiteServer, GraphitePort}),
-    gproc:reg({n, l, metric_sender}),
-    {ok, #state{graphite={GraphiteServer, GraphitePort}, socket=Socket}}.
+    gproc:reg({p, l, metric_sender}),
+    {ok, #state{id=Id, graphite={GraphiteServer, GraphitePort}, socket=Socket}}.
 
 -spec handle_cast({metric, MetricName::binary(), Value::number(), Timestamp::number()}, #state{}) ->
     {noreply, #state{}}.
 handle_cast({metric, MetricName, Value, Timestamp}, #state{}=State) ->
     {ok, NewState} = send_line(io_lib:format("~s ~w ~w~n", [MetricName, Value, Timestamp]), State),
+    lager:debug("Worker ~w just sent: ~p ~w ~w", [State#state.id, MetricName, Value, Timestamp]),
+    lager:debug("Worker ~w has sent ~w lines with a total of ~w bytes.~n", [NewState#state.id, NewState#state.lines_sent, NewState#state.bytes_sent]),
     {noreply, NewState}.
 
 -spec handle_info(_, #state{}) -> {noreply, #state{}}.
@@ -84,11 +104,13 @@ code_change(_OldVsn, State, _Extra) ->
 
 -spec send_line(Line::string(), #state{}) ->
     {ok, #state{}}.
-send_line(Line, #state{socket=Socket}=State) ->
+send_line(Line, #state{socket=Socket, lines_sent=LinesSent, bytes_sent=BytesSent}=State) ->
     case gen_tcp:send(Socket, Line) of
-        ok -> {ok, State};
+        ok -> {ok, State#state{lines_sent = LinesSent + 1,
+                               bytes_sent = BytesSent + length(Line)}};
+        %% TODO: Actually filter on the error we're getting to figure out if we want to try to resend or not
         {error, Reason} ->
-            io:format("Got an error sending line (~p). Will reconnect...~n", [Reason]),
+            lager:error("Got an error sending line (~p). Will reconnect...~n", [Reason]),
             {ok, NewSocket} = connect_to_graphite(State#state.graphite),
             send_line(noretry, Line, State#state{socket=NewSocket})
     end.

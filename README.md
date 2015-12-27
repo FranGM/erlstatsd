@@ -1,7 +1,7 @@
 erlstatsd
 =====
 
-A really simple (and incomplete!) StatsD erlang server.
+A really simple (and incomplete!) StatsD server written in Erlang.
 
 Build
 -----

@@ -1,14 +1,19 @@
 {application, 'erlstatsd',
- [{description, "An OTP application"},
+ [{description, "A simple StatsD server."},
   {vsn, "0.1.0"},
   {registered, []},
   {mod, {'erlstatsd_app', []}},
   {applications,
    [kernel,
     stdlib,
-    gproc
+    gproc,
+    lager
    ]},
-  {env,[]},
+  {env, [
+    {graphitehost, "localhost"},
+    {graphiteport, 2003},
+    {flushinterval, 10000}
+  ]},
   {modules, []},
 
   {contributors, []},

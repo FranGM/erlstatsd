@@ -2,19 +2,19 @@
 
 -behaviour(gen_server).
 
--record(state, {}).
+-record(state, {flushInterval::non_neg_integer()}).
 
 %% API
--export([start_link/0, parse/1]).
+-export([start_link/1, parse/1]).
 
 %% gen_server calbacks
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3, terminate/2, code_change/3]).
 
 %% API
 
--spec start_link() -> {ok, pid()}.
-start_link() ->
-    gen_server:start_link(?MODULE, [], []).
+-spec start_link(FlushInterval::non_neg_integer()) -> {ok, pid()}.
+start_link(FlushInterval) ->
+    gen_server:start_link(?MODULE, [FlushInterval], []).
 
 -spec parse(Line::binary()) -> ok.
 parse(Line) ->
@@ -22,14 +22,14 @@ parse(Line) ->
 
 %% gen_server callbacks
 
--spec init([]) -> {ok, #state{}}.
-init([]) ->
+-spec init([FlushInterval::non_neg_integer()]) -> {ok, #state{}}.
+init([FlushInterval]) ->
     register(line_parser, self()),
-    {ok, #state{}}.
+    {ok, #state{flushInterval=FlushInterval}}.
 
 -spec handle_cast({line, Line::binary()}, #state{}) -> {noreply, #state{}}.
 handle_cast({line, Line}, State) ->
-    parseLine(Line),
+    parseLine(Line, State),
     {noreply, State}.
 
 -spec handle_info(_, #state{}) -> {noreply, #state{}}.
@@ -51,15 +51,15 @@ terminate(_Reason, _State) ->
 %% Private functions
 
 %% Should try to follow this: https://github.com/b/statsd_spec
--spec parseLine(Line::binary()) -> ok.
-parseLine(Line) ->
+-spec parseLine(Line::binary(), #state{}) -> ok.
+parseLine(Line, #state{flushInterval=FlushInterval}) ->
     try
         [MetricName, ValueType] = binary:split(Line, [<<$:>>], [trim]),
         [Value, Type] = binary:split(ValueType, [<<$|>>, <<"\n">>], [global, trim]),
         IntValue = list_to_integer(binary_to_list(Value)),
         case gproc:lookup_pids({n, l, MetricName}) of
             [] ->
-                {ok, Pid} = supervisor:start_child(erlstatsd_metric_sup, [MetricName]),
+                {ok, Pid} = supervisor:start_child(erlstatsd_metric_sup, [MetricName, FlushInterval]),
                 send_metric(binary_to_atom(Type, utf8), Pid, IntValue);
             [Pid] -> send_metric(binary_to_existing_atom(Type, utf8), Pid, IntValue)
         end
