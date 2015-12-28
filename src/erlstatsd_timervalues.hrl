@@ -2,6 +2,8 @@
                       lower::number(),
                       upper::number(),
                       sum::number(),
-                      mean::number()
+                      mean::number(),
+                      std::number(),
+                      sum_squares::number()
                      }).
 

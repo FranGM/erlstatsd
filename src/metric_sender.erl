@@ -15,15 +15,15 @@
 -define(INITIAL_BACKOFF, 500).
 
 %% API
--export([start_link/3, send_metric/3, send_metric/2]).
+-export([start_link/1, send_metric/3, send_metric/2]).
 
 %% gen_server callbacks
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3, terminate/2, code_change/3]).
 
 %% API
--spec start_link({id, non_neg_integer()}, GraphiteServer::inet:hostname() | inet:ip_address(), GraphitePort::inet:port_number()) -> {ok, pid()}.
-start_link({id, Id}, GraphiteServer, GraphitePort) ->
-    gen_server:start_link(?MODULE, {{id, Id}, {GraphiteServer, GraphitePort}}, []).
+-spec start_link({id, non_neg_integer()}) -> {ok, pid()}.
+start_link({id, Id}) ->
+    gen_server:start_link(?MODULE, {id, Id}, []).
 
 -spec send_metric(MetricName::string(), Value::number()) -> ok.
 send_metric(MetricName, Value) ->
@@ -69,9 +69,10 @@ connect_to_graphite({GraphiteServer, GraphitePort}, Backoff) ->
             connect_to_graphite({GraphiteServer, GraphitePort}, NewBackoff)
     end.
 
--spec init({{id, Id::non_neg_integer()}, {GraphiteServer::inet:hostname() | inet:ip_address(), GraphitePort::inet:port_number()}}) ->
+-spec init({id, Id::non_neg_integer()}) ->
     {ok, #state{}}.
-init({{id, Id}, {GraphiteServer, GraphitePort}}) ->
+init({id, Id}) ->
+    {GraphiteServer, GraphitePort} = erlstatsd_config:get_backend_address(),
     {ok, Socket} = connect_to_graphite({GraphiteServer, GraphitePort}),
     gproc:reg({p, l, metric_sender}),
     {ok, #state{id=Id, graphite={GraphiteServer, GraphitePort}, socket=Socket}}.

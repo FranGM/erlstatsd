@@ -23,4 +23,5 @@ init(Id) ->
 loop(Socket, Id) ->
     {ok, {_From, _Port, Line}} = gen_udp:recv(Socket, 0),
     erlstatsd_lineparser:parse(Line),
+    erlstatsd_metric:counter("packets_received", 1),
     loop(Socket, Id).

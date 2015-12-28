@@ -17,11 +17,9 @@
 
 -spec start(_,_) -> {error, _} | {ok, pid()}.
 start(_StartType, _StartArgs) ->
-    {ok, GraphiteHost} = application:get_env(erlstatsd, graphitehost),
-    {ok, GraphitePort} = application:get_env(erlstatsd, graphiteport),
-    {ok, FlushInterval} = application:get_env(erlstatsd, flushinterval),
+    Config = maps:from_list(application:get_all_env(erlstatsd)),
     'erlstatsd_metric_sup':start_link(),
-    'erlstatsd_sup':start_link(GraphiteHost, GraphitePort, FlushInterval).
+    'erlstatsd_sup':start_link(Config).
 
 %%--------------------------------------------------------------------
 -spec stop(_) -> ok.

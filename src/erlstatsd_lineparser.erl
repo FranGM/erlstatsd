@@ -5,16 +5,16 @@
 -record(state, {flushInterval::non_neg_integer()}).
 
 %% API
--export([start_link/1, parse/1]).
+-export([start_link/0, parse/1]).
 
 %% gen_server calbacks
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3, terminate/2, code_change/3]).
 
 %% API
 
--spec start_link(FlushInterval::non_neg_integer()) -> {ok, pid()}.
-start_link(FlushInterval) ->
-    gen_server:start_link(?MODULE, [FlushInterval], []).
+-spec start_link() -> {ok, pid()}.
+start_link() ->
+    gen_server:start_link(?MODULE, [], []).
 
 -spec parse(Line::binary()) -> ok.
 parse(Line) ->
@@ -22,8 +22,9 @@ parse(Line) ->
 
 %% gen_server callbacks
 
--spec init([FlushInterval::non_neg_integer()]) -> {ok, #state{}}.
-init([FlushInterval]) ->
+-spec init([]) -> {ok, #state{}}.
+init([]) ->
+    FlushInterval = erlstatsd_config:get_flush_interval(),
     register(line_parser, self()),
     {ok, #state{flushInterval=FlushInterval}}.
 
@@ -50,21 +51,23 @@ terminate(_Reason, _State) ->
 
 %% Private functions
 
+%% TODO: This should support receiving more than one line per datagram
+%% TODO: Support deltas for gauges
+%% TODO: Support sampling rates: https://github.com/etsy/statsd/blob/master/docs/metric_types.md
 %% Should try to follow this: https://github.com/b/statsd_spec
 -spec parseLine(Line::binary(), #state{}) -> ok.
-parseLine(Line, #state{flushInterval=FlushInterval}) ->
+parseLine(Line, #state{}) ->
     try
         [MetricName, ValueType] = binary:split(Line, [<<$:>>], [trim]),
         [Value, Type] = binary:split(ValueType, [<<$|>>, <<"\n">>], [global, trim]),
         IntValue = list_to_integer(binary_to_list(Value)),
-        case gproc:lookup_pids({n, l, MetricName}) of
-            [] ->
-                {ok, Pid} = supervisor:start_child(erlstatsd_metric_sup, [MetricName, FlushInterval]),
-                send_metric(binary_to_atom(Type, utf8), Pid, IntValue);
-            [Pid] -> send_metric(binary_to_existing_atom(Type, utf8), Pid, IntValue)
-        end
+        Pid = erlstatsd_metric:metric_worker_pid(MetricName),
+        send_metric(binary_to_atom(Type, utf8), Pid, IntValue),
+        erlstatsd_internal_stats:metric_received()
     catch
-        _:Why -> io:format("Parse error: ~p~n", [Why])
+        _:Why ->
+            erlstatsd_internal_stats:bad_line(),
+            io:format("Parse error: ~p~n", [Why])
     end.
 
 -spec send_metric(ms, Pid::pid(), Value::number()) -> ok;
@@ -77,7 +80,6 @@ send_metric(c, Pid, Value) ->
     erlstatsd_metric:counter(Pid, Value);
 send_metric(s, Pid, Value) ->
     erlstatsd_metric:set(Pid, Value);
-%% TODO: Support deltas for gauges
 send_metric(g, Pid, Value) ->
     erlstatsd_metric:gauge(Pid, Value).
 
