@@ -79,7 +79,8 @@ parseLine(Line, #state{}) ->
                     << $+, _/binary >> -> true;
                     _ -> false
                 end,
-        Pid = erlstatsd_metric:metric_worker_pid(MetricName),
+        SanitizedMetricName = sanitize_metric_name(MetricName),
+        Pid = erlstatsd_metric:metric_worker_pid(SanitizedMetricName),
         case {Delta, Type} of
             {true, g} -> send_metric(Type, Pid, {delta, Value}, SampleRate);
             _ -> send_metric(Type, Pid, Value, SampleRate)
@@ -103,3 +104,10 @@ send_metric(g, Pid, {delta, Value}, _SampleRate) ->
     erlstatsd_metric:gauge(Pid, {delta, Value});
 send_metric(g, Pid, Value, _SampleRate) ->
     erlstatsd_metric:gauge(Pid, Value).
+
+-spec sanitize_metric_name(MetricName::string()) -> string().
+sanitize_metric_name(MetricName) when is_binary(MetricName) ->
+    %% TODO: This regexes should at least be compiled beforehand
+    StripSpaces = re:replace(MetricName, "\s+", "_", [global, {return, binary}]),
+    StripSlashes = re:replace(StripSpaces, "\/", "-", [global, {return, binary}]),
+    re:replace(StripSlashes, "[^a-zA-Z_\-0-9\.]", "", [global, {return, binary}]).
