@@ -1,8 +1,9 @@
--module(metric_sender).
+-module(erlstatsd_metric_sender).
 -behaviour(gen_server).
 
 -record(state, {id::non_neg_integer(),
                 graphite::{inet:hostname() | inet:ip_address(), inet:port_number()},
+                prefix=""::string(),
                 socket::port(),
                 lines_sent = 0 :: non_neg_integer(),
                 bytes_sent = 0 :: non_neg_integer()
@@ -34,7 +35,7 @@ send_metric(MetricName, Value) ->
 -spec send_metric(MetricName::string(), Value::number(), Timestamp::number()) -> ok.
 send_metric(MetricName, Value, Timestamp) ->
     %% TODO: Detect when the list is empty and either wait for new processes to come up or just crash with a better error.
-    Pids = gproc:lookup_pids({p, l, metric_sender}),
+    Pids = gproc:lookup_pids({p, l, erlstatsd_metric_sender}),
     SenderPid = lists:nth(random:uniform(length(Pids)), Pids),
     gen_server:cast(SenderPid, {metric, MetricName, Value, Timestamp}).
 
@@ -73,14 +74,21 @@ connect_to_graphite({GraphiteServer, GraphitePort}, Backoff) ->
     {ok, #state{}}.
 init({id, Id}) ->
     {GraphiteServer, GraphitePort} = erlstatsd_config:get_backend_address(),
+    MetricPrefix = erlstatsd_config:get_prefix(),
     {ok, Socket} = connect_to_graphite({GraphiteServer, GraphitePort}),
-    gproc:reg({p, l, metric_sender}),
-    {ok, #state{id=Id, graphite={GraphiteServer, GraphitePort}, socket=Socket}}.
+    gproc:reg({p, l, erlstatsd_metric_sender}),
+    {ok, #state{id=Id,
+                graphite={GraphiteServer, GraphitePort},
+                prefix=MetricPrefix,
+                socket=Socket}
+    }.
+
 
 -spec handle_cast({metric, MetricName::binary(), Value::number(), Timestamp::number()}, #state{}) ->
     {noreply, #state{}}.
-handle_cast({metric, MetricName, Value, Timestamp}, #state{}=State) ->
-    {ok, NewState} = send_line(io_lib:format("~s ~w ~w~n", [MetricName, Value, Timestamp]), State),
+handle_cast({metric, MetricName, Value, Timestamp},
+            #state{prefix=Prefix}=State) ->
+    {ok, NewState} = send_line(format_line(MetricName, Value, Timestamp, Prefix), State), 
     lager:debug("Worker ~w just sent: ~p ~w ~w", [State#state.id, MetricName, Value, Timestamp]),
     lager:debug("Worker ~w has sent ~w lines with a total of ~w bytes.~n", [NewState#state.id, NewState#state.lines_sent, NewState#state.bytes_sent]),
     {noreply, NewState}.
@@ -105,19 +113,37 @@ code_change(_OldVsn, State, _Extra) ->
 
 -spec send_line(Line::string(), #state{}) ->
     {ok, #state{}}.
-send_line(Line, #state{socket=Socket, lines_sent=LinesSent, bytes_sent=BytesSent}=State) ->
+send_line(Line, #state{socket=Socket,
+                       lines_sent=LinesSent,
+                       bytes_sent=BytesSent
+                      }=State) ->
     case gen_tcp:send(Socket, Line) of
         ok -> {ok, State#state{lines_sent = LinesSent + 1,
                                bytes_sent = BytesSent + length(Line)}};
         %% TODO: Actually filter on the error we're getting to figure out if we want to try to resend or not
         {error, Reason} ->
-            lager:error("Got an error sending line (~p). Will reconnect...~n", [Reason]),
+            lager:error("Got an error sending line (~p). Will reconnect...", [Reason]),
             {ok, NewSocket} = connect_to_graphite(State#state.graphite),
+            %% TODO: Do we really want to not retry after the first failure?
             send_line(noretry, Line, State#state{socket=NewSocket})
     end.
 
 -spec send_line(noretry, Line::string(), #state{}) ->
     {ok, #state{}}.
 send_line(noretry, Line, #state{socket=Socket}=State) ->
-    ok = gen_tcp:send(Socket, Line),
-    {ok, State}.
+    case gen_tcp:send(Socket, Line) of
+        {error, Reason} ->
+            lager:error("Got an error sending line (~p). Not retrying...", [Reason]),
+            error;
+        ok -> {ok, State}
+    end.
+
+-spec format_line(MetricName::string(),
+                  Value::number(),
+                  Timestamp::non_neg_integer(),
+                  string()
+                 ) -> string().
+format_line(MetricName, Value, Timestamp, <<"">>) ->
+    io_lib:format("~s ~w ~w ~n", [MetricName, Value, Timestamp]);
+format_line(MetricName, Value, Timestamp, Prefix) ->
+    io_lib:format("~s.~s ~w ~w ~n", [Prefix, MetricName, Value, Timestamp]).

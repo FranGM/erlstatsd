@@ -13,8 +13,6 @@
 
 -define(METRIC_TYPES, [counter, timer, gauge, set]).
 
-%% http://thenewstack.io/collecting-metrics-using-statsd-a-standard-for-real-time-monitoring/
-%% TODO: Allow for global prefixes
 -record(state, {metricName::string(),
                 flushInterval=10000::non_neg_integer(),
                 percentiles=[]::[number()],
@@ -202,12 +200,12 @@ clear_state(State) ->
 
 -spec output_metric(metric_type(), #state{}) -> ok.
 output_metric(set, #state{}=State) ->
-    metric_sender:send_metric(State#state.metricName, sets:size(State#state.sets));
+    erlstatsd_metric_sender:send_metric(State#state.metricName, sets:size(State#state.sets));
 output_metric(counter, State) ->
-    metric_sender:send_metric("stats_counts."++State#state.metricName, State#state.counter),
-    metric_sender:send_metric("stats."++State#state.metricName, State#state.counter / (State#state.flushInterval / 1000));
+    erlstatsd_metric_sender:send_metric("stats_counts."++State#state.metricName, State#state.counter),
+    erlstatsd_metric_sender:send_metric("stats."++State#state.metricName, State#state.counter / (State#state.flushInterval / 1000));
 output_metric(gauge, #state{gauge=Gauge}=State) ->
-    metric_sender:send_metric("stats.gauges." ++ State#state.metricName, Gauge);
+    erlstatsd_metric_sender:send_metric("stats.gauges." ++ State#state.metricName, Gauge);
 output_metric(timer, #state{timers=[]}) ->
     ok;
 output_metric(timer, State) ->
@@ -220,29 +218,29 @@ output_metric(timer, State) ->
     PctTimerVals = calculate_timer_pct_stats(State#state.timers, State#state.percentiles),
     lists:foreach(fun({pct, Pct, TV}) ->
                           PctRepr = round(Pct*100),
-                          metric_sender:send_metric(io_lib:format("stats.timers.~s.upper_~w", [State#state.metricName, PctRepr]), TV#timerValues.upper),
-                          metric_sender:send_metric(io_lib:format("stats.timers.~s.sum_~w", [State#state.metricName, PctRepr]), TV#timerValues.sum),
-                          metric_sender:send_metric(io_lib:format("stats.timers.~s.mean_~w", [State#state.metricName, PctRepr]), TV#timerValues.mean),
-                          metric_sender:send_metric(io_lib:format("stats.timers.~s.median_~w", [State#state.metricName, PctRepr]), TV#timerValues.median),
-                          metric_sender:send_metric(io_lib:format("stats.timers.~s.sum_squares_~w", [State#state.metricName, PctRepr]), TV#timerValues.sum_squares)
+                          erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.upper_~w", [State#state.metricName, PctRepr]), TV#timerValues.upper),
+                          erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.sum_~w", [State#state.metricName, PctRepr]), TV#timerValues.sum),
+                          erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.mean_~w", [State#state.metricName, PctRepr]), TV#timerValues.mean),
+                          erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.median_~w", [State#state.metricName, PctRepr]), TV#timerValues.median),
+                          erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.sum_squares_~w", [State#state.metricName, PctRepr]), TV#timerValues.sum_squares)
                   end, PctTimerVals),
     %% Count (it's affected by sample rate)
-    metric_sender:send_metric(io_lib:format("stats.timers.~s.count", [State#state.metricName]), State#state.timer_count),
+    erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.count", [State#state.metricName]), State#state.timer_count),
     %% Count per second
-    metric_sender:send_metric(io_lib:format("stats.timers.~s.count_ps", [State#state.metricName]), State#state.timer_count / (State#state.flushInterval / 1000)),
-    metric_sender:send_metric(io_lib:format("stats.timers.~s.lower", [State#state.metricName]), TimerVals#timerValues.lower),
-    metric_sender:send_metric(io_lib:format("stats.timers.~s.upper", [State#state.metricName]), TimerVals#timerValues.upper),
-    metric_sender:send_metric(io_lib:format("stats.timers.~s.sum", [State#state.metricName]), TimerVals#timerValues.sum),
-    metric_sender:send_metric(io_lib:format("stats.timers.~s.std", [State#state.metricName]), StdDev),
-    metric_sender:send_metric(io_lib:format("stats.timers.~s.sum_squares", [State#state.metricName]), TimerVals#timerValues.sum_squares),
-    metric_sender:send_metric(io_lib:format("stats.timers.~s.mean", [State#state.metricName]), TimerVals#timerValues.mean),
-    metric_sender:send_metric(io_lib:format("stats.timers.~s.median", [State#state.metricName]), TimerVals#timerValues.median).
+    erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.count_ps", [State#state.metricName]), State#state.timer_count / (State#state.flushInterval / 1000)),
+    erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.lower", [State#state.metricName]), TimerVals#timerValues.lower),
+    erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.upper", [State#state.metricName]), TimerVals#timerValues.upper),
+    erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.sum", [State#state.metricName]), TimerVals#timerValues.sum),
+    erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.std", [State#state.metricName]), StdDev),
+    erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.sum_squares", [State#state.metricName]), TimerVals#timerValues.sum_squares),
+    erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.mean", [State#state.metricName]), TimerVals#timerValues.mean),
+    erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.median", [State#state.metricName]), TimerVals#timerValues.median).
 
 -spec output_histograms(#state{}) -> ok.
 output_histograms(#state{histograms=Histogram_Buckets,
                         metricName=MetricName}) ->
     lists:map(fun ({Key, Val}) ->
-                      metric_sender:send_metric(io_lib:format("stats.timers.~s.histogram.bin_~w", [MetricName, Key]), Val)
+                      erlstatsd_metric_sender:send_metric(io_lib:format("stats.timers.~s.histogram.bin_~w", [MetricName, Key]), Val)
               end, maps:to_list(Histogram_Buckets)),
     ok.
 

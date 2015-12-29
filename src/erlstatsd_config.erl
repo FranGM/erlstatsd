@@ -9,6 +9,7 @@
 %% API
 
 -export([start_link/1,
+         get_prefix/0,
          get_flush_interval/0,
          get_delete_config/0,
          get_backend_address/0,
@@ -31,6 +32,10 @@ get_backend_address() ->
     Host = config_get(graphitehost),
     Port = config_get(graphiteport),
     {Host, Port}.
+
+-spec get_prefix() -> string().
+get_prefix() ->
+    list_to_binary(config_get(prefix)).
 
 -spec get_flush_interval() -> non_neg_integer().
 get_flush_interval() ->
@@ -103,6 +108,7 @@ default_config() ->
     #{graphitehost => "localhost",
       graphiteport => 2003,
       flushinterval => 10000,
+      prefix => "",
       percentiles   => [0.90],
       histogram_bins => #{"foo.bar" => [50, 100, infinity]},
       delete_config => #{gauge => false,
