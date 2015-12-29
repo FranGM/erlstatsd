@@ -110,4 +110,4 @@ sanitize_metric_name(MetricName) when is_binary(MetricName) ->
     %% TODO: This regexes should at least be compiled beforehand
     StripSpaces = re:replace(MetricName, "\s+", "_", [global, {return, binary}]),
     StripSlashes = re:replace(StripSpaces, "\/", "-", [global, {return, binary}]),
-    re:replace(StripSlashes, "[^a-zA-Z_\-0-9\.]", "", [global, {return, binary}]).
+    re:replace(StripSlashes, "[^a-zA-Z\.\-_0-9]", "", [global, {return, binary}]).
