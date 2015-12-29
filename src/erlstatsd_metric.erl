@@ -22,6 +22,7 @@
                 gauge=0::number(),
                 sets=sets:new()::sets:set(),
                 timers=[]::[number()],
+                timer_count=0::number(),
                 histograms=#{}::histogram_bins(),
                 last_received_data=maps:new()::map(),
                 last_flushed=0::non_neg_integer(),
@@ -29,22 +30,20 @@
                }).
 
 %% API
--export([start_link/1, gauge/2, flush/1, set/2, counter/2, timer/2, metric_worker_pid/1]).
+-export([start_link/1,
+         gauge/2,
+         flush/1,
+         set/2,
+         counter/2,
+         counter/3,
+         timer/2,
+         timer/3,
+         metric_worker_pid/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3, terminate/2, code_change/3]).
 
 %% API
-
--spec metric_worker_pid(MetricName::string()) -> pid().
-%% FIXME: Instead of an argument, we need to get this from the config
-metric_worker_pid(MetricName) ->
-    case gproc:lookup_pids({n, l, MetricName}) of
-        [] ->
-            {ok, Pid} = supervisor:start_child(erlstatsd_metric_sup, [MetricName]),
-            Pid;
-            [Pid] -> Pid
-    end.
 
 -spec start_link(MetricName::string()) -> {ok, pid()}.
 start_link(MetricName) ->
@@ -70,16 +69,30 @@ set(MetricName, Value) ->
 -spec counter(Pid::pid(), Value::number()) -> ok;
              (MetricName::string(), Value::number()) -> ok.
 counter(Pid, Value) when is_pid(Pid) ->
-    gen_server:cast(Pid, {metric, c, Value});
+    counter(Pid, Value, 1.0);
 counter(MetricName, Value) ->
-    counter(metric_worker_pid(MetricName), Value).
+    counter(MetricName, Value, 1.0).
+
+-spec counter(Pid::pid(), Value::number(), SampleRate::float()) -> ok;
+             (MetricName::string(), Value::number(), SampleRate::float()) -> ok.
+counter(Pid, Value, SampleRate) when is_pid(Pid) ->
+    gen_server:cast(Pid, {metric, c, Value, SampleRate});
+counter(MetricName, Value, SampleRate) ->
+    counter(metric_worker_pid(MetricName), Value, SampleRate).
 
 -spec timer(Pid::pid(), Value::number()) -> ok;
-           (MetricName::string(), Value::number()) -> ok.
+             (MetricName::string(), Value::number()) -> ok.
 timer(Pid, Value) when is_pid(Pid) ->
-    gen_server:cast(Pid, {metric, ms, Value});
+    timer(Pid, Value, 1.0);
 timer(MetricName, Value) ->
-    timer(metric_worker_pid(MetricName), Value).
+    timer(MetricName, Value, 1.0).
+
+-spec timer(Pid::pid(), Value::number(), SampleRate::float()) -> ok;
+           (MetricName::string(), Value::number(), SampleRate::float()) -> ok.
+timer(Pid, Value, SampleRate) when is_pid(Pid) ->
+    gen_server:cast(Pid, {metric, ms, Value, SampleRate});
+timer(MetricName, Value, SampleRate) ->
+    timer(metric_worker_pid(MetricName), Value, SampleRate).
 
 -spec flush(Pid::pid()) -> ok;
            (MetricName::string()) -> ok.
@@ -93,7 +106,7 @@ flush(MetricName) ->
 -spec init({metric, MetricName::string()}) -> {ok, #state{}}.
 init({metric, MetricName}) ->
     FlushInterval = erlstatsd_config:get_flush_interval(),
-    gproc:reg({n, l, MetricName}),
+    gproc:reg({n, l, {metric, MetricName}}),
     gproc:reg({p, l, metric}),
     ConfigDelete = erlstatsd_config:get_delete_config(),
     PercentileConfig = erlstatsd_config:get_percentile_config(),
@@ -103,19 +116,24 @@ init({metric, MetricName}) ->
                 histograms=empty_histogram_bins(MetricName),
                 delete_metrics=ConfigDelete}}.
 
--spec handle_cast({metric, c | ms | s | g, Value::number()}, #state{}) -> {noreply, #state{}};
+-spec handle_cast({metric, c | ms | s | g, Value::number(), SampleRate::float()}, #state{}) -> {noreply, #state{}};
+                 ({metric, s | g, Value::number()}, #state{}) -> {noreply, #state{}};
                  ({metric, g, delta, Value::number()}, #state{}) -> {noreply, #state{}};
                  ({flush}, #state{}) -> {noreply, #state{}}.
-handle_cast({metric, c, Value}, #state{counter=Counter, last_received_data=Last_updated}=State) ->
+handle_cast({metric, c, Value, SampleRate}, #state{counter=Counter, last_received_data=Last_updated}=State) ->
     %% Counters
     New_Last_Updated = Last_updated#{counter => now_timestamp()},
-    {noreply, State#state{counter=Counter + Value, last_received_data=New_Last_Updated}};
-handle_cast({metric, ms, Value}, #state{timers=Timers,
-                                        last_received_data=Last_updated,
-                                        histograms=Histogram_Buckets}=State) ->
+    {noreply, State#state{counter=Counter + (Value * 1/SampleRate),
+                          last_received_data=New_Last_Updated}};
+handle_cast({metric, ms, Value, SampleRate},
+            #state{timers=Timers,
+                   timer_count=TimerCount,
+                   last_received_data=Last_updated,
+                   histograms=Histogram_Buckets}=State) ->
     %% Timing
     New_Last_Updated = Last_updated#{timer => now_timestamp()},
     {noreply, State#state{timers=[Value] ++ Timers,
+                          timer_count=TimerCount + (1/SampleRate),
                           last_received_data=New_Last_Updated,
                           histograms=increase_histogram_bucket(Value, Histogram_Buckets)}};
 handle_cast({metric, s, Value}, #state{sets=Sets, last_received_data=Last_updated}=State) ->
@@ -177,6 +195,7 @@ empty_histogram_bins(MetricName) ->
 clear_state(State) ->
     {ok, State#state{counter=0,
                      timers=[],
+                     timer_count=0,
                      sets=sets:new(),
                      histograms=empty_histogram_bins(State#state.metricName),
                      last_flushed=now_timestamp()}}.
@@ -194,19 +213,30 @@ output_metric(timer, #state{timers=[]}) ->
 output_metric(timer, State) ->
     output_histograms(State),
     TimerVals = calculate_timer_stats(State#state.timers),
+    Mean = TimerVals#timerValues.mean,
+    StdDev = lists:sum(lists:map(fun (X) ->
+                                         (X - Mean) * (X - Mean)
+                                 end, State#state.timers)),
     PctTimerVals = calculate_timer_pct_stats(State#state.timers, State#state.percentiles),
-    %% TODO: Also need to implement sum_squares and std
     lists:foreach(fun({pct, Pct, TV}) ->
                           PctRepr = round(Pct*100),
                           metric_sender:send_metric(io_lib:format("stats.timers.~s.upper_~w", [State#state.metricName, PctRepr]), TV#timerValues.upper),
                           metric_sender:send_metric(io_lib:format("stats.timers.~s.sum_~w", [State#state.metricName, PctRepr]), TV#timerValues.sum),
-                          metric_sender:send_metric(io_lib:format("stats.timers.~s.mean_~w", [State#state.metricName, PctRepr]), TV#timerValues.mean)
+                          metric_sender:send_metric(io_lib:format("stats.timers.~s.mean_~w", [State#state.metricName, PctRepr]), TV#timerValues.mean),
+                          metric_sender:send_metric(io_lib:format("stats.timers.~s.median_~w", [State#state.metricName, PctRepr]), TV#timerValues.median),
+                          metric_sender:send_metric(io_lib:format("stats.timers.~s.sum_squares_~w", [State#state.metricName, PctRepr]), TV#timerValues.sum_squares)
                   end, PctTimerVals),
+    %% Count (it's affected by sample rate)
+    metric_sender:send_metric(io_lib:format("stats.timers.~s.count", [State#state.metricName]), State#state.timer_count),
+    %% Count per second
+    metric_sender:send_metric(io_lib:format("stats.timers.~s.count_ps", [State#state.metricName]), State#state.timer_count / (State#state.flushInterval / 1000)),
     metric_sender:send_metric(io_lib:format("stats.timers.~s.lower", [State#state.metricName]), TimerVals#timerValues.lower),
     metric_sender:send_metric(io_lib:format("stats.timers.~s.upper", [State#state.metricName]), TimerVals#timerValues.upper),
     metric_sender:send_metric(io_lib:format("stats.timers.~s.sum", [State#state.metricName]), TimerVals#timerValues.sum),
-    metric_sender:send_metric(io_lib:format("stats.timers.~s.count", [State#state.metricName]), TimerVals#timerValues.count),
-    metric_sender:send_metric(io_lib:format("stats.timers.~s.mean", [State#state.metricName]), TimerVals#timerValues.mean).
+    metric_sender:send_metric(io_lib:format("stats.timers.~s.std", [State#state.metricName]), StdDev),
+    metric_sender:send_metric(io_lib:format("stats.timers.~s.sum_squares", [State#state.metricName]), TimerVals#timerValues.sum_squares),
+    metric_sender:send_metric(io_lib:format("stats.timers.~s.mean", [State#state.metricName]), TimerVals#timerValues.mean),
+    metric_sender:send_metric(io_lib:format("stats.timers.~s.median", [State#state.metricName]), TimerVals#timerValues.median).
 
 -spec output_histograms(#state{}) -> ok.
 output_histograms(#state{histograms=Histogram_Buckets,
@@ -232,10 +262,16 @@ calculate_timer_stats(Timers) ->
     Max = lists:last(SortedList),
     Sum = lists:sum(SortedList),
     Mean = Sum / Count,
+    Median = calculate_median(Timers),
+    SumSquares = lists:sum(lists:map(fun (X) ->
+                                             X*X
+                                     end, SortedList)),
     #timerValues{lower=Min,
                  upper=Max,
                  sum=Sum,
                  count=Count,
+                 median=Median,
+                 sum_squares=SumSquares,
                  mean=Mean}.
 
 -spec flush_metrics(#state{}) -> {ok, #state{}}.
@@ -282,4 +318,20 @@ increase_histogram_bucket(Value, BucketMap) ->
         FilteredList ->
             Key = hd(lists:sort(FilteredList)),
             BucketMap#{Key => maps:get(Key, BucketMap) + 1}
+    end.
+
+-spec metric_worker_pid(MetricName::string()) -> pid().
+metric_worker_pid(MetricName) ->
+    case gproc:where({n, l, {metric, MetricName}}) of
+        undefined ->
+            gen_server:call(erlstatsd_internal_stats, {metric, MetricName});
+        MetricPid -> MetricPid
+    end.
+
+-spec calculate_median([number()]) -> number().
+%% Calculate the median of a (assumed sorted) list
+calculate_median(List) ->
+    case length(List) rem 2 of
+        0 -> lists:nth((length(List) div 2) + 1, List);
+        1 -> (lists:nth((length(List) div 2) + 1, List) + lists:nth((length(List) div 2) + 1, List)) / 2
     end.

@@ -14,7 +14,11 @@
          }).
 
 %% API
--export([start_link/0, bad_line/0, metric_received/0, flush/0, last_flush/1]).
+-export([start_link/0,
+         bad_line/0,
+         metric_received/0,
+         flush/0,
+         last_flush/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3, terminate/2, code_change/3]).
@@ -27,7 +31,7 @@ start_link() ->
 
 -spec last_flush(Timestamp::non_neg_integer()) -> ok.
 last_flush(Timestamp) ->
-    gen_server:cast(internal_stats_worker_pid(), {last_flush, Timestamp}).
+    gen_server:cast(erlstatsd_internal_stats, {last_flush, Timestamp}).
 
 -spec metric_received() -> ok.
 metric_received() ->
@@ -39,13 +43,13 @@ bad_line() ->
 
 -spec flush() -> ok.
 flush() ->
-    gen_server:cast(internal_stats_worker_pid(), flush).
+    gen_server:cast(erlstatsd_internal_stats, flush).
 
 %% gen_server callbacks
 
 -spec init([]) -> {ok, #state{}}.
 init([]) ->
-    gproc:reg({n, l, internal_stats}),
+    register(erlstatsd_internal_stats, self()),
     {ok, #state{}}.
 
 -spec handle_info(_, #state{}) -> {noreply, #state{}}.
@@ -58,7 +62,15 @@ terminate(normal, #state{}) ->
 
 -spec handle_call(terminate, _, #state{}) -> {stop, normal, #state{}}.
 handle_call(terminate, _From, State) ->
-    {stop, normal, State}.
+    {stop, normal, State};
+handle_call({metric,  MetricName}, _From, #state{}=State) ->
+    Pid = case gproc:where({n, l, {metric, MetricName}}) of
+        undefined ->
+            {ok, MetricPid} = supervisor:start_child(erlstatsd_metric_sup, [MetricName]),
+            MetricPid;
+        MetricPid -> MetricPid
+          end,
+    {reply, Pid, State}.
 
 -spec handle_cast(flush, #state{}) -> {noreply, #state{}};
                  ({last_flush, Timestamp::non_neg_integer()}, #state{}) -> {noreply, #state{}}.
@@ -72,8 +84,4 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 %% Internal functions
-
--spec internal_stats_worker_pid() -> pid().
-internal_stats_worker_pid() ->
-    gproc:lookup_pid({n, l, internal_stats}).
 

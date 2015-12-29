@@ -10,27 +10,36 @@
 %% gen_server calbacks
 -export([init/1, handle_info/2, handle_cast/2, handle_call/3, terminate/2, code_change/3]).
 
+-define(DEFAULT_SAMPLE_RATE, 1.0).
+
 %% API
 
 -spec start_link() -> {ok, pid()}.
 start_link() ->
     gen_server:start_link(?MODULE, [], []).
 
--spec parse(Line::binary()) -> ok.
-parse(Line) ->
-    gen_server:cast(line_parser, {line, Line}).
+-spec parse(Packet::binary()) -> ok.
+parse(Packet) ->
+    Pids = gproc:lookup_pids({p, l, line_parser}),
+    ParserPid = lists:nth(random:uniform(length(Pids)), Pids),
+    gen_server:cast(ParserPid, {packet, Packet}).
 
 %% gen_server callbacks
 
 -spec init([]) -> {ok, #state{}}.
 init([]) ->
     FlushInterval = erlstatsd_config:get_flush_interval(),
-    register(line_parser, self()),
+    gproc:reg({p, l, line_parser}),
     {ok, #state{flushInterval=FlushInterval}}.
 
--spec handle_cast({line, Line::binary()}, #state{}) -> {noreply, #state{}}.
-handle_cast({line, Line}, State) ->
-    parseLine(Line, State),
+-spec handle_cast({packet, Packet::binary()}, #state{}) -> {noreply, #state{}}.
+handle_cast({packet, Packet}, State) ->
+    %% The last element from the split is either an empty binary or a line that doesn't
+    %%     end with a newline
+    [_ | Lines] = lists:reverse(binary:split(Packet, [<<$\n>>], [global])),
+    lists:map(fun (Line) ->
+                  parseLine(Line, State)
+              end, Lines),
     {noreply, State}.
 
 -spec handle_info(_, #state{}) -> {noreply, #state{}}.
@@ -51,18 +60,30 @@ terminate(_Reason, _State) ->
 
 %% Private functions
 
-%% TODO: This should support receiving more than one line per datagram
-%% TODO: Support deltas for gauges
-%% TODO: Support sampling rates: https://github.com/etsy/statsd/blob/master/docs/metric_types.md
-%% Should try to follow this: https://github.com/b/statsd_spec
 -spec parseLine(Line::binary(), #state{}) -> ok.
 parseLine(Line, #state{}) ->
     try
-        [MetricName, ValueType] = binary:split(Line, [<<$:>>], [trim]),
-        [Value, Type] = binary:split(ValueType, [<<$|>>, <<"\n">>], [global, trim]),
-        IntValue = list_to_integer(binary_to_list(Value)),
+        [MetricName, ValueType] = binary:split(Line, [<<$:>>]),
+        [Value, Type, SampleRate] = case binary:split(ValueType, [<<$|>>], [global]) of
+            [V, T, <<$@, S/binary>>] ->
+                                             [list_to_integer(binary_to_list(V)),
+                                  binary_to_existing_atom(T, utf8),
+                                  list_to_float(binary:bin_to_list(S))];
+            [V, T] ->
+                                            [list_to_integer(binary_to_list(V)),
+                       binary_to_existing_atom(T, utf8),
+                      ?DEFAULT_SAMPLE_RATE]
+        end,
+        Delta = case ValueType of
+                    << $-, _/binary >> -> true;
+                    << $+, _/binary >> -> true;
+                    _ -> false
+                end,
         Pid = erlstatsd_metric:metric_worker_pid(MetricName),
-        send_metric(binary_to_atom(Type, utf8), Pid, IntValue),
+        case {Delta, Type} of
+            {true, g} -> send_metric(Type, Pid, {delta, Value}, SampleRate);
+            _ -> send_metric(Type, Pid, Value, SampleRate)
+        end,
         erlstatsd_internal_stats:metric_received()
     catch
         _:Why ->
@@ -70,16 +91,15 @@ parseLine(Line, #state{}) ->
             io:format("Parse error: ~p~n", [Why])
     end.
 
--spec send_metric(ms, Pid::pid(), Value::number()) -> ok;
-                 (c, Pid::pid(), Value::number()) -> ok;
-                 (s, Pid::pid(), Value::number()) -> ok;
-                 (g, Pid::pid(), Value::number()) -> ok.
-send_metric(ms, Pid, Value) ->
-    erlstatsd_metric:timer(Pid, Value);
-send_metric(c, Pid, Value) ->
-    erlstatsd_metric:counter(Pid, Value);
-send_metric(s, Pid, Value) ->
+-spec send_metric(ms | c | s | g, Pid::pid(), Value::number(), SampleRate::float()) -> ok;
+                 (g, Pid::pid(), {delta, Value::number()}, SampleRate::float()) -> ok.
+send_metric(ms, Pid, Value, SampleRate) ->
+    erlstatsd_metric:timer(Pid, Value, SampleRate);
+send_metric(c, Pid, Value, SampleRate) ->
+    erlstatsd_metric:counter(Pid, Value, SampleRate);
+send_metric(s, Pid, Value, _SampleRate) ->
     erlstatsd_metric:set(Pid, Value);
-send_metric(g, Pid, Value) ->
+send_metric(g, Pid, {delta, Value}, _SampleRate) ->
+    erlstatsd_metric:gauge(Pid, {delta, Value});
+send_metric(g, Pid, Value, _SampleRate) ->
     erlstatsd_metric:gauge(Pid, Value).
-

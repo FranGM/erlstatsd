@@ -3,7 +3,7 @@
                       upper::number(),
                       sum::number(),
                       mean::number(),
-                      std::number(),
+                      median::number(),
                       sum_squares::number()
                      }).
 

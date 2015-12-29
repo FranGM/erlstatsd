@@ -12,16 +12,28 @@ socket_opts() ->
 
 -spec init(Id::non_neg_integer()) -> {ok, pid()}.
 init(Id) ->
+    SocketIsActive = false,
     Pid = spawn_link(fun() ->
-                             {ok, Socket} = gen_udp:open(8125, [{reuseaddr, true} ,inet,  binary, {active, false}] ++ socket_opts() ),
-                             loop(Socket, Id)
+                             {ok, Socket} = gen_udp:open(8125, [
+                                                                inet,
+                                                                binary,
+                                                                {active, SocketIsActive}] ++ socket_opts() ),
+                             loop(Socket, Id, {active, SocketIsActive})
                      end),
     {ok, Pid}.
 
 
--spec loop(Socket::port(), Id::non_neg_integer()) -> no_return().
-loop(Socket, Id) ->
+%% TODO: Should wait until rest of processes are ready before starting to accept traffic (gproc:await in init should do it)
+-spec loop(Socket::gen_udp:socket(), Id::non_neg_integer(), {active, boolean()}) -> no_return().
+loop(Socket, Id, {active, false}) ->
     {ok, {_From, _Port, Line}} = gen_udp:recv(Socket, 0),
     erlstatsd_lineparser:parse(Line),
     erlstatsd_metric:counter("packets_received", 1),
-    loop(Socket, Id).
+    loop(Socket, Id, {active, false});
+loop(Socket, Id, {active, true}) ->
+    receive
+        {udp, _Socket, _From, _Port, Line} ->
+            erlstatsd_lineparser:parse(Line),
+            erlstatsd_metric:counter("packets_received", 1)
+    end,
+    loop(Socket, Id, {active, true}).
