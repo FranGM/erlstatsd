@@ -54,9 +54,9 @@ flusher_worker_spec() ->
     {erlstatsd_metric_flusher, {erlstatsd_metric_flusher, start_link, []},
      permanent, brutal_kill, worker, [erlstatsd_metric_flusher]}.
 
--spec metric_sender_worker_spec(NumWorkers::non_neg_integer) -> [supervisor:child_spec()].
+-spec metric_sender_worker_spec(NumWorkers::non_neg_integer()) -> [supervisor:child_spec()].
 metric_sender_worker_spec(NumWorkers) ->
-    [{{erlstatsd_metric_sender, X}, {erlstatsd_metric_sender, start_link, [{id, X}]},
+    [{{metric_sender, X}, {erlstatsd_metric_sender, start_link, [{id, X}]},
       permanent, brutal_kill, worker, [erlstatsd_metric_sender]} || X <- lists:seq(1, NumWorkers)].
 
 -spec lineparser_worker_spec(NumWorkers::non_neg_integer()) -> [supervisor:child_spec()].

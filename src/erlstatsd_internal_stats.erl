@@ -35,11 +35,11 @@ last_flush(Timestamp) ->
 
 -spec metric_received() -> ok.
 metric_received() ->
-    erlstatsd_metric:counter("metrics_received", 1).
+    erlstatsd_metric:counter(<<"metrics_received">>, 1).
 
 -spec bad_line() -> ok.
 bad_line() ->
-    erlstatsd_metric:counter("bad_lines_seen", 1).
+    erlstatsd_metric:counter(<<"bad_lines_seen">>, 1).
 
 -spec flush() -> ok.
 flush() ->

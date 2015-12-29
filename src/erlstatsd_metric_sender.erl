@@ -2,9 +2,9 @@
 -behaviour(gen_server).
 
 -record(state, {id::non_neg_integer(),
-                graphite::{inet:hostname() | inet:ip_address(), inet:port_number()},
-                prefix=""::string(),
-                socket::port(),
+                graphite :: {inet:hostname() | inet:ip_address(), inet:port_number()},
+                prefix = <<"">> :: binary(),
+                socket :: gen_tcp:socket(),
                 lines_sent = 0 :: non_neg_integer(),
                 bytes_sent = 0 :: non_neg_integer()
                }).
@@ -70,8 +70,7 @@ connect_to_graphite({GraphiteServer, GraphitePort}, Backoff) ->
             connect_to_graphite({GraphiteServer, GraphitePort}, NewBackoff)
     end.
 
--spec init({id, Id::non_neg_integer()}) ->
-    {ok, #state{}}.
+-spec init({id, Id::non_neg_integer()}) -> {ok, #state{}}.
 init({id, Id}) ->
     {GraphiteServer, GraphitePort} = erlstatsd_config:get_backend_address(),
     MetricPrefix = erlstatsd_config:get_prefix(),
@@ -83,12 +82,11 @@ init({id, Id}) ->
                 socket=Socket}
     }.
 
-
--spec handle_cast({metric, MetricName::binary(), Value::number(), Timestamp::number()}, #state{}) ->
+-spec handle_cast({metric, MetricName::binary(), Value::number(), Timestamp::non_neg_integer()}, #state{}) ->
     {noreply, #state{}}.
 handle_cast({metric, MetricName, Value, Timestamp},
             #state{prefix=Prefix}=State) ->
-    {ok, NewState} = send_line(format_line(MetricName, Value, Timestamp, Prefix), State), 
+    {ok, NewState} = send_line(format_line(MetricName, Value, Timestamp, Prefix), State),
     lager:debug("Worker ~w just sent: ~p ~w ~w", [State#state.id, MetricName, Value, Timestamp]),
     lager:debug("Worker ~w has sent ~w lines with a total of ~w bytes.~n", [NewState#state.id, NewState#state.lines_sent, NewState#state.bytes_sent]),
     {noreply, NewState}.
@@ -138,11 +136,11 @@ send_line(noretry, Line, #state{socket=Socket}=State) ->
         ok -> {ok, State}
     end.
 
--spec format_line(MetricName::string(),
+-spec format_line(MetricName::binary(),
                   Value::number(),
                   Timestamp::non_neg_integer(),
-                  string()
-                 ) -> string().
+                  Prefix::binary()
+                 ) -> [char()].
 format_line(MetricName, Value, Timestamp, <<"">>) ->
     io_lib:format("~s ~w ~w ~n", [MetricName, Value, Timestamp]);
 format_line(MetricName, Value, Timestamp, Prefix) ->

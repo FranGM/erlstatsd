@@ -33,7 +33,7 @@ get_backend_address() ->
     Port = config_get(graphiteport),
     {Host, Port}.
 
--spec get_prefix() -> string().
+-spec get_prefix() -> binary().
 get_prefix() ->
     list_to_binary(config_get(prefix)).
 

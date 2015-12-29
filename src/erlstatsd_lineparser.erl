@@ -1,5 +1,6 @@
 -module(erlstatsd_lineparser).
 
+
 -behaviour(gen_server).
 
 -record(state, {flushInterval::non_neg_integer()}).
@@ -36,7 +37,11 @@ init([]) ->
 handle_cast({packet, Packet}, State) ->
     %% The last element from the split is either an empty binary or a line that doesn't
     %%     end with a newline
-    [_ | Lines] = lists:reverse(binary:split(Packet, [<<$\n>>], [global])),
+    [Extra | Lines] = lists:reverse(binary:split(Packet, [<<$\n>>], [global])),
+    case Extra of
+        <<"">> -> ok;
+        _ -> erlstatsd_internal_stats:bad_line()
+    end,
     lists:map(fun (Line) ->
                   parseLine(Line, State)
               end, Lines),
@@ -62,6 +67,7 @@ terminate(_Reason, _State) ->
 
 -spec parseLine(Line::binary(), #state{}) -> ok.
 parseLine(Line, #state{}) ->
+    lager:debug("Parsing line: '~p'", [Line]),
     try
         [MetricName, ValueType] = binary:split(Line, [<<$:>>]),
         [Value, Type, SampleRate] = case binary:split(ValueType, [<<$|>>], [global]) of
@@ -89,7 +95,7 @@ parseLine(Line, #state{}) ->
     catch
         _:Why ->
             erlstatsd_internal_stats:bad_line(),
-            io:format("Parse error: ~p~n", [Why])
+            lager:error("Parse error: ~p", [Why])
     end.
 
 -spec send_metric(ms | c | s | g, Pid::pid(), Value::number(), SampleRate::float()) -> ok;
@@ -105,9 +111,22 @@ send_metric(g, Pid, {delta, Value}, _SampleRate) ->
 send_metric(g, Pid, Value, _SampleRate) ->
     erlstatsd_metric:gauge(Pid, Value).
 
--spec sanitize_metric_name(MetricName::string()) -> string().
+-spec sanitize_metric_name(MetricName::binary()) -> binary().
 sanitize_metric_name(MetricName) when is_binary(MetricName) ->
     %% TODO: This regexes should at least be compiled beforehand
     StripSpaces = re:replace(MetricName, "\s+", "_", [global, {return, binary}]),
     StripSlashes = re:replace(StripSpaces, "\/", "-", [global, {return, binary}]),
     re:replace(StripSlashes, "[^a-zA-Z\.\-_0-9]", "", [global, {return, binary}]).
+
+%% Tests
+
+-ifdef(EUNIT_TEST).
+
+-include_lib("eunit/include/eunit.hrl").
+
+sanitize_metric_name_test_() ->
+    [?_assert(<<"foo">> =:= sanitize_metric_name(<<"fo/o">>)),
+     ?_assert(<<"b_ar">> =:= sanitize_metric_name(<<"b ar">>)),
+     ?_assert(<<"foobar">> =:= sanitize_metric_name(<<"foo+bar">>))].
+
+-endif.

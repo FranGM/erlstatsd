@@ -1,10 +1,6 @@
 -module(erlstatsd_metric).
 -behaviour(gen_server).
 
--ifdef(EUNIT_TEST).
--compile(export_all).
--endif.
-
 -include("erlstatsd_timervalues.hrl").
 
 -type metric_type() :: counter | timer | gauge | set.
@@ -16,7 +12,7 @@
 -record(state, {metricName::string(),
                 flushInterval=10000::non_neg_integer(),
                 percentiles=[]::[number()],
-                counter=0::non_neg_integer(),
+                counter=0::number(),
                 gauge=0::number(),
                 sets=sets:new()::sets:set(),
                 timers=[]::[number()],
@@ -65,14 +61,14 @@ set(MetricName, Value) ->
     set(metric_worker_pid(MetricName), Value).
 
 -spec counter(Pid::pid(), Value::number()) -> ok;
-             (MetricName::string(), Value::number()) -> ok.
+             (MetricName::string() | binary(), Value::number()) -> ok.
 counter(Pid, Value) when is_pid(Pid) ->
     counter(Pid, Value, 1.0);
 counter(MetricName, Value) ->
     counter(MetricName, Value, 1.0).
 
 -spec counter(Pid::pid(), Value::number(), SampleRate::float()) -> ok;
-             (MetricName::string(), Value::number(), SampleRate::float()) -> ok.
+             (MetricName::string() | binary(), Value::number(), SampleRate::float()) -> ok.
 counter(Pid, Value, SampleRate) when is_pid(Pid) ->
     gen_server:cast(Pid, {metric, c, Value, SampleRate});
 counter(MetricName, Value, SampleRate) ->
@@ -318,7 +314,7 @@ increase_histogram_bucket(Value, BucketMap) ->
             BucketMap#{Key => maps:get(Key, BucketMap) + 1}
     end.
 
--spec metric_worker_pid(MetricName::string()) -> pid().
+-spec metric_worker_pid(MetricName::binary()) -> pid().
 metric_worker_pid(MetricName) ->
     case gproc:where({n, l, {metric, MetricName}}) of
         undefined ->
@@ -333,3 +329,25 @@ calculate_median(List) ->
         0 -> lists:nth((length(List) div 2) + 1, List);
         1 -> (lists:nth((length(List) div 2) + 1, List) + lists:nth((length(List) div 2) + 1, List)) / 2
     end.
+
+%% Tests
+
+-ifdef(EUNIT_TEST).
+
+-include_lib("eunit/include/eunit.hrl").
+
+-spec timer_stats_test_() -> [term()].
+timer_stats_test_() ->
+    [?_assert(#timerValues{lower=1, upper=10, sum=55, count=10, mean=5.5, median=6, sum_squares=385} =:= calculate_timer_stats([10,2,3,4,5,6,7,8,9,1])),
+    ?_assert(#timerValues{} =:= calculate_timer_stats([]))].
+%% {timerValues,10,1,10,55,5.5,6,385}
+%%
+-spec percentile_test_() -> [term()].
+percentile_test_() ->
+    [?_assert([1, 2, 3, 4, 5] =:= calculate_percentile([1, 2, 3, 4, 5], 1)),
+    ?_assert([] =:= calculate_percentile([1, 2, 3, 4, 5], 0)),
+    ?_assert([] =:= calculate_percentile([], 0.90)),
+    ?_assert([43,54,56,61,62,66,68,69,69,70,71,72,77,78,79,85,87,88,89,93,95,96,98] =:= calculate_percentile([70,54,56,61,62,66,93,77,69,43,71,72,69,78,79,85,87,88,89,68,95,96,98,99,99], 0.90)),
+    ?_assert([43,54,56,61,62,66,68,69,69,70,71,72,77] =:= calculate_percentile([70,54,56,61,62,66,93,77,69,43,71,72,69,78,79,85,87,88,89,68,95,96,98,99,99], 0.50))].
+
+-endif.
