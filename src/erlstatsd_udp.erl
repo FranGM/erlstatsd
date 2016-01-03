@@ -2,7 +2,7 @@
 
 -export([init/1]).
 
--define(SOCKET_ACTIVE, false).
+-define(SOCKET_ACTIVE, true).
 
 -spec socket_opts() -> [{raw, non_neg_integer(), non_neg_integer(), binary()}].
 socket_opts() ->

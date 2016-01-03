@@ -70,6 +70,7 @@ parseLine(Line, #state{}) ->
     lager:debug("Parsing line: '~p'", [Line]),
     try
         [MetricName, ValueType] = binary:split(Line, [<<$:>>]),
+        %% TODO: If the Type is 's' (set), maybe Value doesn't need to be a number?
         [Value, Type, SampleRate] = case binary:split(ValueType, [<<$|>>], [global]) of
             [V, T, <<$@, S/binary>>] ->
                                              [list_to_integer(binary_to_list(V)),

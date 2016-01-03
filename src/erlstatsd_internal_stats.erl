@@ -60,6 +60,7 @@ handle_info(_Msg, State) ->
 terminate(normal, #state{}) ->
     ok.
 
+%% FIXME: This is a bottleneck ratelimiting how fast new metrics can be created.
 -spec handle_call(terminate, _, #state{}) -> {stop, normal, #state{}}.
 handle_call(terminate, _From, State) ->
     {stop, normal, State};
@@ -75,6 +76,9 @@ handle_call({metric,  MetricName}, _From, #state{}=State) ->
 -spec handle_cast(flush, #state{}) -> {noreply, #state{}};
                  ({last_flush, Timestamp::non_neg_integer()}, #state{}) -> {noreply, #state{}}.
 handle_cast(flush, #state{}=State) ->
+    NumMetrics = length(gproc:lookup_pids({p, l, metric})),
+    erlstatsd_metric_sender:send_metric(<<"statsd.numStats">>, NumMetrics),
+    lager:debug("numStats: ~w", [NumMetrics]),
     {noreply, State};
 handle_cast({last_flush, Timestamp}, #state{}=State) ->
     {noreply, State#state{last_flush=Timestamp}}.
